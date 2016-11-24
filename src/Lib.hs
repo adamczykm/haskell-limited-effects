@@ -1,15 +1,18 @@
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE UnicodeSyntax #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE DeriveFunctor #-}
 --{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module Lib where
 
@@ -20,6 +23,9 @@ import Control.Monad.Freer
 import Control.Monad.Freer.Internal
 import Data.Aeson
 import Data.ByteString.Lazy as BL (ByteString)
+import Data.Vinyl
+import Control.Lens hiding (Identity)
+import Data.Singletons.TH
 
 -- type Interpreter f g = forall a b c. (Member f a, Member g b) => Eff a c ->  Eff b c
 -- type (~<) f g = Interpreter f g
@@ -48,16 +54,12 @@ instance MonadHttp FreeHttp where
     post url body = FreeHttp (liftF (Post url (encode body) ""))
 
 
-
-
 class Monad m => MonadLog m where
   logM :: String -> m ()
 
 instance MonadLog IO where
   logM = putStrLn
 
-instance (Member Teletype r) => MonadLog (Eff r) where
-  logM = putTextLn'
 -- instance MonadReader m =>
 
 -- newtype TeletypeM a = TeletypeM { unTeletypeM :: Eff '[Teletype] a}
@@ -66,11 +68,50 @@ instance (Member Teletype r) => MonadLog (Eff r) where
 --   logM = undefined
 
 type InterpreterFor g eff = forall a. (forall f. eff f => f a) -> g a
+newtype Interp g eff = Interp {unInterp :: forall a. (forall f. eff f => f a) -> g a}
+-----------------------------------------
+-- SERVICES
+data Service = LoggingService | HttpService
+data Temp a = Temp
+
+type family ServicesFam m (s :: Service) :: * where
+  ServicesFam g 'LoggingService = Interp g MonadLog
+  ServicesFam g 'HttpService = Interp g MonadHttp
+
+newtype Attr f g = Attr { _unAttr :: ServicesFam f g}
+makeLenses ''Attr
+genSingletons [ ''Service ]
+
+-- type ServiceFun s m = forall ss. (Monad m, s ⊆ ss ) => ReaderT (Rec (Attr m) ss) m ()
+
+-- temp :: ServiceFun '[LoggingService] m
+-- temp = do
+--   rss <- view (rlens SLoggingService . rsubset) <$> ask
+--   lift $ actualStuff . _unAttr $ rss -- ^. (rlens SLoggingService)
+--   where
+--     actualStuff :: Interp m MonadLog -> m ()
+--     actualStuff logSrv = unInterp logSrv $ logM "I've made It"
+type ServiceFun s m = forall ss. (Monad m, s ∈ ss ) => ReaderT (Rec (Attr m) ss) m ()
+
+temp :: ServiceFun 'LoggingService m
+temp = do
+  rss <- view (rlens SLoggingService) <$> ask
+  lift $ actualStuff . _unAttr $ rss -- ^. (rlens SLoggingService)
+  where
+    actualStuff :: Interp m MonadLog -> m ()
+    actualStuff logSrv = unInterp logSrv $ logM "I've made It"
+
 data Services eff = Services { runLog  :: eff `InterpreterFor` MonadLog }
 -- data Services = Services { runLog  :: IO `InterpreterFor` MonadLog }
 
 testLogService :: IO `InterpreterFor` MonadLog
 testLogService action = action
+
+testLogService3 :: Interp IO MonadLog
+testLogService3 = Interp testLogService
+
+testLogService4 :: ServicesFam IO 'LoggingService
+testLogService4 = Interp testLogService
 
 testLogService2 :: Eff '[Teletype] `InterpreterFor` MonadLog
 testLogService2 action = action
@@ -87,6 +128,9 @@ app1 = do
   ss <- ask
   lift $ runLog ss $ logM "http://www.google.com"
 
+
+test3 :: IO ()
+test3 = void $ runReaderT temp ((Attr testLogService3 :: Attr IO 'LoggingService) :& RNil)
 
 test2 :: IO ()
 test2 = void $ runReaderT app1 (Services testLogService)
@@ -109,6 +153,8 @@ instance Show (Teletype s) where
   show (PutStrLn s) = "PutStrLn " ++ s
   show ExitSuccess = "ExitSuccess"
 
+instance (Member Teletype r) => MonadLog (Eff r) where
+  logM = putTextLn'
 
 putTextLn' :: Member Teletype r => String -> Eff r ()
 putTextLn' = send . PutStrLn
@@ -120,6 +166,10 @@ exitSuccess' :: Member Teletype r => Eff r ()
 exitSuccess' = send ExitSuccess
 
 
+-- runTeletypeIO2 :: Eff '[Teletype, IO] w -> IO w
+-- runTeletypeIO2 = runM . handleRelay return interp
+--   where
+--     interp (PutStrLn msg) eff = send _
 
 runTeletypeIO :: Eff '[Teletype] w -> IO w
 runTeletypeIO (Val x) = return x
