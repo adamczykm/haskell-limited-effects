@@ -130,6 +130,12 @@ productionApiService = (Interpret $ \x -> liftIO $ runHttpApp x) . runRestApi
 
 ---- application services implementations
 
+
+
+runApp app srv = runReaderT (unApp app) srv
+
+newtype App a = App { unApp :: forall c m. (c m, Monad m ) => ReaderT (Services c) m a  }
+
 type Application a = forall c m. (c m, Monad m) => ReaderT (Services c) m a
 type ServiceFun1 s r = forall c m ss. (c m, Monad m, s ∈ ss) => ReaderT (Rec (Attr c) ss) m r
 
@@ -148,11 +154,16 @@ logFun = restApiFun actualStuff
     -- actualStuff :: Interp m MonadLog -> m ()
     -- actualStuff logSrv = unInterp logSrv $ logM "I've made It"
 
-app1 :: Application ()
-app1 = logFun
+-- not legit <- only temporarily
+instance (MonadReader String) IO where
+  ask = getLine
+  -- local f (MockHttp m) = MockHttp $ local f m
+
+app1 :: App ()
+app1 = App logFun
 
 test3 :: IO ()
-test3 = void $ runReaderT app1 (rcast productionServices)
+test3 = void $ runApp app1 (rcast productionServices)
 
 
 -- app1 :: Application ()
@@ -161,11 +172,11 @@ test3 = void $ runReaderT app1 (rcast productionServices)
 --   ss <- ask
 --   lift $ 
 
+mockServices :: Services (MonadReader String)
+mockServices = (SRestApiService =:: mockedApiService) :& RNil
 
 productionServices :: Services MonadIO
--- productionServices = undefined
 productionServices = (SRestApiService =:: productionApiService) :& RNil
--- productionServices = undefined
 
 dd :: MonadIO m => m ()
 dd = undefined
