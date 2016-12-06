@@ -1,31 +1,35 @@
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE UnicodeSyntax #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE ConstraintKinds #-}
-{-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE AllowAmbiguousTypes        #-}
+{-# LANGUAGE ConstraintKinds            #-}
+{-# LANGUAGE DataKinds                  #-}
+{-# LANGUAGE DeriveFunctor              #-}
+{-# LANGUAGE FlexibleContexts           #-}
+{-# LANGUAGE FlexibleInstances          #-}
+{-# LANGUAGE GADTs                      #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TypeOperators #-}
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE DeriveFunctor #-}
---{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE InstanceSigs #-}
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE InstanceSigs               #-}
+{-# LANGUAGE MultiParamTypeClasses      #-}
+{-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE RankNTypes                 #-}
+{-# LANGUAGE ScopedTypeVariables        #-}
+{-# LANGUAGE TemplateHaskell            #-}
+{-# LANGUAGE TypeFamilies               #-}
+{-# LANGUAGE TypeOperators              #-}
+{-# LANGUAGE UndecidableInstances       #-}
+{-# LANGUAGE UnicodeSyntax              #-}
 
 module Lib where
 
-import Control.Monad
-import Control.Monad.Reader
-import Control.Monad.Free
-import Control.Monad.Freer
-import Control.Monad.Freer.Internal
-import Data.Aeson
-import Data.ByteString.Lazy as BL (ByteString)
-import Data.Vinyl
-import Control.Lens hiding (Identity)
-import Data.Singletons.TH
+import           Control.Lens                 hiding (Identity)
+import           Control.Monad
+import           Control.Monad.Free
+import           Control.Monad.Freer
+import           Control.Monad.Freer.Internal
+import           Control.Monad.Reader
+import           Data.Aeson
+import           Data.ByteString.Lazy.Char8   (ByteString)
+import qualified Data.ByteString.Lazy.Char8   as BL
+import           Data.Singletons.TH
+import           Data.Vinyl
 
 -- type Interpreter f g = forall a b c. (Member f a, Member g b) => Eff a c ->  Eff b c
 -- type (~<) f g = Interpreter f g
@@ -46,7 +50,7 @@ data HttpF next
     | Post Url ByteString next
 
 instance Functor HttpF where
-  fmap f (Get url n) = Get url (fmap f n)
+  fmap f (Get url n)    = Get url (fmap f n)
   fmap f (Post url a n) = Post url a (f n)
 
 instance MonadHttp FreeHttp where
@@ -60,6 +64,10 @@ class Monad m => MonadLog m where
 instance MonadLog IO where
   logM = putStrLn
 
+instance MonadHttp IO where
+  get url = return $ BL.pack $ "get " ++ url
+  post url _ = return $ BL.pack $ "post " ++ url
+
 -- instance MonadReader m =>
 
 -- newtype TeletypeM a = TeletypeM { unTeletypeM :: Eff '[Teletype] a}
@@ -69,6 +77,7 @@ instance MonadLog IO where
 
 type InterpreterFor g eff = forall a. (forall f. eff f => f a) -> g a
 newtype Interp g eff = Interp {unInterp :: forall a. (forall f. eff f => f a) -> g a}
+
 -----------------------------------------
 -- SERVICES
 data Service = LoggingService | HttpService
@@ -79,22 +88,57 @@ type family ServicesFam m (s :: Service) :: * where
   ServicesFam g 'HttpService = Interp g MonadHttp
 
 newtype Attr f g = Attr { _unAttr :: ServicesFam f g}
+
+(=::) :: (sing f -> ServicesFam g f -> Attr g f)
+(=::) _ = Attr
+
 makeLenses ''Attr
 genSingletons [ ''Service ]
 
--- type ServiceFun s m = forall ss. (Monad m, s ⊆ ss ) => ReaderT (Rec (Attr m) ss) m ()
-
--- temp :: ServiceFun '[LoggingService] m
--- temp = do
---   rss <- view (rlens SLoggingService . rsubset) <$> ask
+-- type ServiceFun2 s m = forall ss. (Monad m, s ⊆ ss) => ReaderT (Rec (Attr m) ss) m ()
+-- temp2 :: ServiceFun2 '[ 'LoggingService] m
+-- temp2 = do
+--   rss <- rget SLoggingService <$> ask
 --   lift $ actualStuff . _unAttr $ rss -- ^. (rlens SLoggingService)
 --   where
 --     actualStuff :: Interp m MonadLog -> m ()
 --     actualStuff logSrv = unInterp logSrv $ logM "I've made It"
-type ServiceFun s m = forall ss. (Monad m, s ∈ ss ) => ReaderT (Rec (Attr m) ss) m ()
+    -- actualStuff :: Interp m MonadHttp -> m ()
+    -- actualStuff logSrv = undefined
 
-temp :: ServiceFun 'LoggingService m
-temp = do
+-- type ServiceFun s m = forall ss. (Monad m, s ⊆ ss) => ReaderT (Rec (Attr m) ss) m ()
+-- temp :: ServiceFun '[ 'LoggingService ] m
+-- temp = do
+--   rss <- rget SLoggingService <$> ask
+--   -- rss <- head . rget <$> ask
+--   lift $ actualStuff . _unAttr $ rss -- ^. (rlens SLoggingService)
+--   where
+--     actualStuff :: Interp m MonadLog -> m ()
+--     actualStuff logSrv = unInterp logSrv $ logM "I've made It"
+
+-- type ServiceFun s m = forall ss. (Monad m, s ∈ ss ) => ReaderT (Rec (Attr m) ss) m ()
+type Application2 a = forall m. Monad m => ReaderT (Services2 m) m a
+
+-- type ServiceFun ss m r = Monad m => ReaderT (Rec (Attr m) ss) m r
+
+topFun :: Application2 ()
+topFun = logFun
+
+type ServiceFun ss m r = forall sr. (Monad m, ss ⊆ sr) => ReaderT (Rec (Attr m) sr) m r
+type ServiceFun1 s r = forall ss m. (Monad m, s ∈ ss) => ReaderT (Rec (Attr m) ss) m r
+type ServiceFun2 s1 s2 m r = forall ss. (Monad m, s1 ∈ ss, s2 ∈ ss) => ReaderT (Rec (Attr m) ss) m r
+type ServiceFun3 s1 s2 s3 m r = forall ss. (Monad m, s1 ∈ ss, s2 ∈ ss, s3 ∈ ss) => ReaderT (Rec (Attr m) ss) m r
+
+httpFun :: ServiceFun1 'HttpService ByteString
+httpFun = do
+  rss <- view (rlens SHttpService) <$> ask
+  lift $ actualStuff . _unAttr $ rss -- ^. (rlens SLoggingService)
+  where
+    actualStuff :: Interp m MonadHttp -> m ByteString
+    actualStuff logSrv = unInterp logSrv $ get "http://www.google.com"
+
+logFun :: ServiceFun1 'LoggingService ()
+logFun = do
   rss <- view (rlens SLoggingService) <$> ask
   lift $ actualStuff . _unAttr $ rss -- ^. (rlens SLoggingService)
   where
@@ -104,11 +148,25 @@ temp = do
 data Services eff = Services { runLog  :: eff `InterpreterFor` MonadLog }
 -- data Services = Services { runLog  :: IO `InterpreterFor` MonadLog }
 
+-- data Services2 eff = Services2 { runLog2 :: Interp eff MonadLog}
+
+type Services2 eff = Rec (Attr eff) '[ 'LoggingService, 'HttpService]
+
+jon :: Services2 IO
+jon = (SLoggingService =:: testLogService3)
+       :& (SHttpService =:: testHttpService)
+       :& RNil
+
 testLogService :: IO `InterpreterFor` MonadLog
 testLogService action = action
 
 testLogService3 :: Interp IO MonadLog
 testLogService3 = Interp testLogService
+
+testHttpService :: Interp IO MonadHttp
+testHttpService = Interp a
+  where a :: IO `InterpreterFor` MonadHttp
+        a action = action
 
 testLogService4 :: ServicesFam IO 'LoggingService
 testLogService4 = Interp testLogService
@@ -130,7 +188,7 @@ app1 = do
 
 
 test3 :: IO ()
-test3 = void $ runReaderT temp ((Attr testLogService3 :: Attr IO 'LoggingService) :& RNil)
+test3 = void $ runReaderT topFun (rcast jon)
 
 test2 :: IO ()
 test2 = void $ runReaderT app1 (Services testLogService)
@@ -149,9 +207,9 @@ data Teletype s where
   ExitSuccess :: Teletype ()
 
 instance Show (Teletype s) where
-  show GetLine = "GetLine"
+  show GetLine      = "GetLine"
   show (PutStrLn s) = "PutStrLn " ++ s
-  show ExitSuccess = "ExitSuccess"
+  show ExitSuccess  = "ExitSuccess"
 
 instance (Member Teletype r) => MonadLog (Eff r) where
   logM = putTextLn'
@@ -212,7 +270,7 @@ runLogIO :: Eff '[Log] w -> IO w
 runLogIO (Val x) = return x
 runLogIO (E u q) = case decomp u of
   Right (LogSimple msg) -> putStrLn msg >> runLogIO (qApp q ())
-  Left _               -> error "This cannot happen"
+  Left _                -> error "This cannot happen"
 
 -- logTeletype :: Log ~< (Teletype w)
 -- logTeletype :: Log ~< Teletype
